@@ -3,6 +3,7 @@ using StardewModdingAPI;
 using StardewModdingAPI.Events;
 using StardewModdingAPI.Utilities;
 using StardewValley;
+using StardewValley.Menus;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -31,6 +32,7 @@ namespace MultiPause
         **********/
 
         public PerScreen<bool> IsPaused = new PerScreen<bool>(() => false);
+        public PerScreen<bool> IsFishing = new PerScreen<bool>(() => false);
         public PerScreen<bool> QueryMessageSent = new PerScreen<bool>(() => false);
         public PerScreen<string> PauseMode { get; set; } = new PerScreen<string>(() => string.Empty);
         public PerScreen<bool> InitialPauseState => new PerScreen<bool>(() => PauseMode.Value != PAUSE_ANY);
@@ -123,6 +125,12 @@ namespace MultiPause
                 // Update states if host player
                 foreach (KeyValuePair<long, PlayerState> entry in PlayerStates.Value)
                 {
+
+                    if (entry.Value.IsFishing)
+                    {
+                        entry.Value.TotalTimeFishing++;
+                    }
+
                     if (entry.Value.IsPaused || !entry.Value.IsOnline)
                     {
                         entry.Value.TotalTimePaused++;
@@ -133,13 +141,20 @@ namespace MultiPause
                 ForceSinglePlayerCheck.Value = true;
                 var isPaused = !Game1.shouldTimePass();
                 ForceSinglePlayerCheck.Value = false;
+                var isFishing = (Game1.activeClickableMenu != null && Game1.activeClickableMenu is BobberBar);
+                if (isFishing)
+                {
+                    Monitor.Log("FISHING!", LogLevel.Info);
+                }
 
                 // Check player's pause state and broadcast changes
-                if (isPaused != IsPaused.Value)
+                if (isPaused != IsPaused.Value || isFishing != IsFishing.Value)
                 {
                     IsPaused.Value = isPaused;
+                    IsFishing.Value = isFishing;
                     var state = GetPlayerState(Game1.player.UniqueMultiplayerID);
                     state.IsPaused = isPaused;
+                    state.IsFishing = isFishing;
                     state.Ticks = Game1.ticks;
 
                     if (PauseMode.Value != Config.Value.PauseMode_ANY_ALL_AUTO.ToUpper())
@@ -191,6 +206,7 @@ namespace MultiPause
 
             state.IsOnline = true;
             state.IsPaused = InitialPauseState.Value;
+            state.IsFishing = false;
         }
 
         public void OnPeerDisconnected(object sender, PeerDisconnectedEventArgs e)
@@ -198,6 +214,7 @@ namespace MultiPause
             var state = GetPlayerState(e.Peer.PlayerID);
             state.IsOnline = false;
             state.IsPaused = true;
+            state.IsFishing = false;
         }
 
         public void OnModMessageReceived(object sender, ModMessageReceivedEventArgs e)
@@ -213,6 +230,7 @@ namespace MultiPause
                     state.IsPaused = messageState.IsPaused;
                     state.IsHost = messageState.IsHost;
                     state.ConfigPauseMode = messageState.ConfigPauseMode;
+                    state.IsFishing = messageState.IsFishing;
                     if (state.IsHost && PauseMode.Value != state.ConfigPauseMode)
                         PauseMode.Value = state.ConfigPauseMode;
                 }
@@ -234,6 +252,7 @@ namespace MultiPause
                 {
                     var state = GetPlayerState(item.Key);
                     state.TotalTimePaused = item.Value.TotalTimePaused;
+                    state.TotalTimeFishing = item.Value.TotalTimeFishing;
                     state.IsOnline = item.Value.IsOnline;
                     state.IsHost = item.Value.IsHost;
                     state.ConfigPauseMode = item.Value.ConfigPauseMode;
@@ -331,6 +350,7 @@ namespace MultiPause
             else if (Config.Value.PauseMode_ANY_ALL_AUTO.ToUpper() == PAUSE_AUTO)
             {
                 int min = Int32.MaxValue;
+                int maxFishingTime = Int32.MinValue;
                 foreach (Farmer farmer in Game1.getOnlineFarmers())
                 {
                     PlayerStates.Value.TryGetValue(farmer.UniqueMultiplayerID, out PlayerState state);
@@ -338,15 +358,24 @@ namespace MultiPause
                     {
                         if (!state.IsPaused) allPaused = false;
 
-                        if (state.TotalTimePaused == min && state.IsPaused)
+                        if (!freeze)
                         {
-                            freeze = true;
+                            if (state.TotalTimeFishing > maxFishingTime)
+                            {
+                                maxFishingTime = state.TotalTimeFishing;
+                                freeze = state.IsFishing;
+                            }
+                            else if (state.TotalTimePaused == min && state.IsPaused)
+                            {
+                                freeze = true;
+                            }
+                            else if (state.TotalTimePaused < min)
+                            {
+                                min = state.TotalTimePaused;
+                                freeze = state.IsPaused;
+                            }
                         }
-                        else if (state.TotalTimePaused < min)
-                        {
-                            min = state.TotalTimePaused;
-                            freeze = state.IsPaused;
-                        }
+
                     }
                 }
             }
@@ -374,7 +403,10 @@ namespace MultiPause
             public bool IsHost;
             public string ConfigPauseMode;
 
-            public PlayerState(bool isPaused, int ticks, int totalTimePaused = 0, bool isOnline = true, bool isHost = false, string configPauseMode = PAUSE_AUTO)
+            public int TotalTimeFishing;
+            public bool IsFishing;
+
+            public PlayerState(bool isPaused, int ticks, int totalTimePaused = 0, bool isOnline = true, bool isHost = false, string configPauseMode = PAUSE_AUTO, int totalTimefishing = 0, bool isFishing = false)
             {
                 IsPaused = isPaused;
                 Ticks = ticks;
@@ -382,6 +414,8 @@ namespace MultiPause
                 IsOnline = isOnline;
                 IsHost = isHost;
                 ConfigPauseMode = configPauseMode;
+                TotalTimeFishing = totalTimefishing;
+                IsFishing = isFishing;
             }
 
             public override string ToString()
